@@ -1,37 +1,108 @@
-const STORAGE="lte_data_v2";
-const ADMIN_ID="learnadmin";
-const ADMIN_PASSWORD="EarthLearn2026!";
+import { auth, db } from './firebase.js';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
+import { doc, setDoc, getDoc, collection, addDoc, getDocs, updateDoc, deleteDoc, query, orderBy, serverTimestamp, where } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
-const defaultData={users:[],folders:["Getting Started"],content:[
-{id:"demo1",type:"video",title:"Welcome to Learn to Earth",folder:"Getting Started",url:"",description:"Add a video from the Admin panel."},
-{id:"demo2",type:"document",title:"Study Guide",folder:"Getting Started",url:"",description:"Add your own PDF/PPT from the Admin panel."}]};
+const $ = id => document.getElementById(id);
+const show = (id, html) => { const e=$(id); if(e){e.innerHTML=html; e.classList.remove('hidden');} };
+const esc = s => String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-function getData(){try{let d=JSON.parse(localStorage.getItem(STORAGE));if(!d)d=JSON.parse(JSON.stringify(defaultData));d.folders=d.folders||["Getting Started"];d.users=d.users||[];d.content=d.content||[];return d}catch(e){return JSON.parse(JSON.stringify(defaultData))}}
-function saveData(d){localStorage.setItem(STORAGE,JSON.stringify(d))}
-function currentUser(){return localStorage.getItem("lte_current_user")}
-function isAdmin(){return localStorage.getItem("lte_admin")==="1"}
-function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function show(id,msg){let e=document.getElementById(id);if(e){e.textContent=msg;e.classList.remove("hidden")}}
-function driveVideoUrl(v){let m=v.trim().match(/\/file\/d\/([a-zA-Z0-9_-]+)/)||v.trim().match(/[?&]id=([a-zA-Z0-9_-]+)/);return m?"https://drive.google.com/uc?export=download&id="+m[1]:v.trim()}
+function driveId(u){ const s=(u||'').trim(); const m=s.match(/\/file\/d\/([\w-]+)/)||s.match(/[?&]id=([\w-]+)/); return m?m[1]:null; }
+function driveEmbed(u){ const id=driveId(u); return id ? `https://drive.google.com/file/d/${id}/preview` : null; }
+function directVideo(u){ return /\.(mp4|webm|ogg)(\?.*)?$/i.test(u||''); }
 
-document.addEventListener("DOMContentLoaded",()=>{
-let s=document.getElementById("signupForm");if(s)s.onsubmit=e=>{e.preventDefault();let d=getData(),n=document.getElementById("name").value.trim(),em=document.getElementById("email").value.trim().toLowerCase(),p=document.getElementById("password").value;if(d.users.some(u=>u.email===em)){show("signupMessage","This email is already registered.");return}d.users.push({id:Date.now()+"",name:n,email:em,password:p,status:"pending"});saveData(d);show("signupMessage","You will be joined soon. Your request is waiting for Admin approval.");s.reset()};
-let l=document.getElementById("loginForm");if(l)l.onsubmit=e=>{e.preventDefault();let d=getData(),em=document.getElementById("loginEmail").value.trim().toLowerCase(),p=document.getElementById("loginPassword").value,u=d.users.find(x=>x.email===em&&x.password===p);if(!u){show("loginMessage","Incorrect email or password.");return}if(u.status!=="approved"){show("loginMessage",u.status==="pending"?"You will be joined soon. Your request is still waiting for Admin approval.":"Your access has been rejected.");return}localStorage.setItem("lte_current_user",em);location.href="dashboard.html"};
-let a=document.getElementById("adminLoginForm");if(a)a.onsubmit=e=>{e.preventDefault();let id=document.getElementById("adminId").value.trim(),pw=document.getElementById("adminPassword").value;if(id===ADMIN_ID&&pw===ADMIN_PASSWORD){localStorage.setItem("lte_admin","1");renderAdmin()}else show("adminMessage","Invalid Admin ID or password.")};
-let lo=document.getElementById("logoutBtn");if(lo)lo.onclick=()=>{localStorage.removeItem("lte_current_user");location.href="index.html"};
-let alo=document.getElementById("adminLogout");if(alo)alo.onclick=()=>{localStorage.removeItem("lte_admin");location.reload()};
-let ff=document.getElementById("folderForm");if(ff)ff.onsubmit=e=>{e.preventDefault();let n=document.getElementById("folderName").value.trim(),d=getData();if(!n)return;if(d.folders.some(x=>x.toLowerCase()===n.toLowerCase())){alert("That folder already exists.");return}d.folders.push(n);saveData(d);ff.reset();renderAdmin()};
-let vf=document.getElementById("videoForm");if(vf)vf.onsubmit=e=>{e.preventDefault();addContent("video",document.getElementById("videoTitle").value,document.getElementById("videoFolder").value,driveVideoUrl(document.getElementById("videoUrl").value));vf.reset()};
-let df=document.getElementById("docForm");if(df)df.onsubmit=e=>{e.preventDefault();addContent("document",document.getElementById("docTitle").value,document.getElementById("docFolder").value,document.getElementById("docUrl").value.trim());df.reset()};
-if(document.getElementById("library"))renderLibrary();if(document.getElementById("adminPanel"))renderAdmin();if(document.getElementById("player"))renderWatch();
+async function getProfile(uid){ const s=await getDoc(doc(db,'users',uid)); return s.exists()?s.data():null; }
+async function current(){ return new Promise(resolve=>onAuthStateChanged(auth, async u=>{ if(!u){resolve(null);return;} resolve({u,p:await getProfile(u.uid)}); })); }
+async function requireLearner(){ const c=await current(); if(!c){location.href='login.html'; return null;} if(c.p?.role==='admin'){location.href='admin.html'; return null;} return c; }
+
+// SIGN UP
+if($('signupForm')) $('signupForm').addEventListener('submit', async e=>{
+ e.preventDefault();
+ try{
+   const name=$('name').value.trim(), email=$('email').value.trim().toLowerCase(), password=$('password').value;
+   const c=await createUserWithEmailAndPassword(auth,email,password);
+   await setDoc(doc(db,'users',c.user.uid),{name,email,role:'learner',status:'pending',createdAt:serverTimestamp()});
+   $('signupForm').reset(); show('signupMessage','<div class="message success">Account created. <b>You will be joined soon.</b> Your account is waiting for admin approval.</div>');
+ }catch(e){ show('signupMessage',`<div class="message error">${esc(e.message)}</div>`); }
 });
 
-function addContent(type,title,folder,url){let d=getData();d.content.push({id:Date.now()+"",type,title:title.trim(),folder,url,description:""});saveData(d);renderAdmin()}
-function renderFolderSelects(){let d=getData();["videoFolder","docFolder"].forEach(id=>{let s=document.getElementById(id);if(s)s.innerHTML=d.folders.map(f=>'<option value="'+esc(f)+'">'+esc(f)+'</option>').join("")})}
-function renderLibrary(){let d=getData(),n=document.getElementById("accessNotice"),g=document.getElementById("library"),tabs=document.getElementById("folderTabs"),u=d.users.find(x=>x.email===currentUser());if(!u){n.textContent="Please sign up and get approved by the Admin before accessing the learning library.";g.innerHTML='<div class="panel"><a class="button primary" href="signup.html">Join Learn to Earth</a></div>';return}if(u.status!=="approved"){n.textContent=u.status==="pending"?"You will be joined soon. Your request is waiting for Admin approval.":"Your access has been rejected.";g.innerHTML="";return}n.textContent="You are approved. Enjoy learning!";let active=new URLSearchParams(location.search).get("folder")||"All";tabs.innerHTML=["All",...d.folders].map(f=>'<button class="folder-tab '+(f===active?"active":"")+'" onclick=\'selectFolder('+JSON.stringify(f)+')\'>'+esc(f)+'</button>').join("");let items=active==="All"?d.content:d.content.filter(c=>c.folder===active);g.innerHTML=items.length?items.map(c=>'<article class="content-card"><div class="thumb">'+(c.type==="video"?"▶":"▣")+'</div><div class="card-body"><div class="tag">'+esc(c.folder)+" • "+c.type+'</div><h3>'+esc(c.title)+'</h3><p class="muted">'+esc(c.description||"Learning material from Learn to Earth.")+'</p>'+(c.type==="video"?(c.url?'<a class="button primary" href="watch.html?id='+encodeURIComponent(c.id)+'">Watch lesson</a>':'<span class="muted">Video URL not added yet.</span>'):(c.url?'<a class="button primary" target="_blank" rel="noopener" href="'+esc(c.url)+'">Open material</a>':'<span class="muted">Material link not added yet.</span>'))+'</div></article>').join(""):'<div class="panel folder-empty"><h3>This folder is empty</h3><p class="muted">The Admin can add lessons and materials here.</p></div>'}
-function selectFolder(f){location.href="dashboard.html"+(f==="All"?"":"?folder="+encodeURIComponent(f))}
-function renderWatch(){let id=new URLSearchParams(location.search).get("id"),d=getData(),c=d.content.find(x=>x.id===id),u=d.users.find(x=>x.email===currentUser());if(!c||c.type!=="video"){document.getElementById("watchTitle").textContent="Lesson not found";return}if(!u||u.status!=="approved"){location.href="login.html";return}document.getElementById("watchTitle").textContent=c.title;document.getElementById("watchFolder").textContent=c.folder;let p=document.getElementById("player");if(c.url){p.src=c.url;p.load();p.addEventListener("error",()=>{let h=document.getElementById("videoHelp");h.classList.remove("hidden");h.textContent="This link cannot be played as a browser video. For Google Drive, make sure the file is an MP4 and sharing is 'Anyone with the link → Viewer'. A direct MP4/WebM URL is the most reliable option."},{once:true})}else document.getElementById("videoShell").innerHTML='<div class="notice">The Admin has not added a video URL yet.</div>'}
-function renderAdmin(){let b=document.getElementById("adminLoginBox"),p=document.getElementById("adminPanel");if(!p)return;if(!isAdmin()){b.classList.remove("hidden");p.classList.add("hidden");return}b.classList.add("hidden");p.classList.remove("hidden");let d=getData();renderFolderSelects();document.getElementById("foldersList").innerHTML=d.folders.map(f=>'<div class="folder-list-row"><span>📁 <strong>'+esc(f)+'</strong></span><button class="button mini danger" onclick=\'deleteFolder('+JSON.stringify(f)+')\'>Delete</button></div>').join("");document.getElementById("adminContent").innerHTML=d.content.map(c=>'<div class="admin-content-row"><div><strong>'+esc(c.title)+'</strong><br><span class="muted">📁 '+esc(c.folder)+' • '+c.type+'</span></div><button class="button mini danger" onclick="deleteContent(\''+c.id+'\')">Delete</button></div>').join("")||"<p>No content yet.</p>";document.getElementById("usersList").innerHTML=d.users.map(u=>'<div class="user-row"><div><strong>'+esc(u.name)+'</strong><br><span class="muted">'+esc(u.email)+' • '+u.status+'</span></div><div>'+(u.status!=="approved"?'<button class="button mini" onclick="setUserStatus(\''+u.id+'\',\'approved\')">Approve</button>':"")+' <button class="button mini danger" onclick="setUserStatus(\''+u.id+'\',\'rejected\')">Reject</button></div></div>').join("")||"<p>No learner requests yet.</p>"}
-function deleteContent(id){let d=getData();d.content=d.content.filter(c=>c.id!==id);saveData(d);renderAdmin()}
-function deleteFolder(name){let d=getData();if(d.content.some(c=>c.folder===name)){alert("This folder contains content. Delete its content first.");return}if(d.folders.length===1){alert("Keep at least one folder.");return}d.folders=d.folders.filter(f=>f!==name);saveData(d);renderAdmin()}
-function setUserStatus(id,status){let d=getData(),u=d.users.find(x=>x.id===id);if(u){u.status=status;saveData(d);renderAdmin()}}
+// LOGIN
+if($('loginForm')) $('loginForm').addEventListener('submit', async e=>{
+ e.preventDefault();
+ try{
+   const c=await signInWithEmailAndPassword(auth,$('loginEmail').value.trim().toLowerCase(),$('loginPassword').value);
+   const p=await getProfile(c.user.uid);
+   if(p?.role==='admin') location.href='admin.html'; else location.href='dashboard.html';
+ }catch(e){ show('loginMessage','<div class="message error">Incorrect email/password, or the account has not been set up.</div>'); }
+});
+
+if($('logoutBtn')) $('logoutBtn').onclick=()=>signOut(auth).then(()=>location.href='index.html');
+if($('adminLogout')) $('adminLogout').onclick=()=>signOut(auth).then(()=>location.reload());
+
+// HOME
+if(location.pathname.endsWith('index.html') || location.pathname.endsWith('/')){
+ onAuthStateChanged(auth, async u=>{ if(!u)return; const p=await getProfile(u.uid); if($('loginLink')) $('loginLink').textContent=p?.role==='admin'?'Admin':'Account'; });
+}
+
+// DASHBOARD
+if($('folderTabs') && $('library')) (async()=>{
+ const c=await requireLearner(); if(!c)return;
+ if(c.p?.status!=='approved'){ $('accessNotice').innerHTML='<div class="notice">Your account is <b>'+esc(c.p?.status||'pending')+'</b>. You will be joined soon after admin approval.</div>'; return; }
+ $('accessNotice').innerHTML='<div class="notice success">Access approved. Welcome to Learn to Earth.</div>';
+ const fs=await getDocs(query(collection(db,'folders'),orderBy('name'))); const folders=fs.docs.map(d=>({id:d.id,...d.data()}));
+ let active=folders[0]?.id;
+ async function render(){
+   $('folderTabs').innerHTML=folders.map(f=>`<button class="${f.id===active?'active':''}" data-folder="${f.id}">${esc(f.name)}</button>`).join('');
+   $('folderTabs').querySelectorAll('button').forEach(b=>b.onclick=async()=>{active=b.dataset.folder; await render();});
+   if(!active){$('library').innerHTML='<div class="notice">No folders yet.</div>';return;}
+   const ls=await getDocs(query(collection(db,'content'),orderBy('createdAt','desc')));
+   const items=ls.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.folderId===active);
+   $('library').innerHTML=items.length?items.map(x=>x.type==='video'?`<article class="feature"><div class="icon">▶</div><h3>${esc(x.title)}</h3><p>${esc(x.description||'')}</p><a class="button primary" href="watch.html?id=${x.id}">Watch video</a></article>`:`<article class="feature"><div class="icon">▣</div><h3>${esc(x.title)}</h3><p>${esc(x.description||'')}</p><a class="button secondary" target="_blank" rel="noopener" href="${esc(x.url)}">Open material</a></article>`).join(''):'<div class="notice">No content in this folder yet.</div>';
+ }
+ await render();
+})();
+
+// WATCH
+if($('player') && $('watchTitle')) (async()=>{
+ const c=await requireLearner(); if(!c)return;
+ if(c.p?.status!=='approved'){location.href='dashboard.html';return;}
+ const id=new URLSearchParams(location.search).get('id'); if(!id){$('watchTitle').textContent='Lesson not found';return;}
+ const s=await getDoc(doc(db,'content',id)); if(!s.exists()||s.data().type!=='video'){ $('watchTitle').textContent='Lesson not found';return; }
+ const x=s.data(); $('watchTitle').textContent=x.title; $('watchFolder').textContent=x.description||'';
+ const em=driveEmbed(x.url);
+ if(em){
+   $('videoShell').innerHTML=`<iframe class="drive-player" src="${em}" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+   $('videoHelp').classList.remove('hidden'); $('videoHelp').textContent='This video is embedded from Google Drive. Download/copy controls are not shown by Learn to Earth, but Google Drive/browser restrictions cannot guarantee that a determined viewer cannot copy a video.';
+ } else if(directVideo(x.url)){
+   $('player').src=x.url; $('player').controlsList='nodownload noplaybackrate'; $('player').disablePictureInPicture=true; $('player').oncontextmenu=()=>false;
+ } else { $('videoHelp').classList.remove('hidden'); $('videoHelp').textContent='Use a Google Drive file link or a direct MP4/WebM URL.'; }
+})();
+
+// ADMIN
+if($('adminLoginForm') || $('adminPanel')) (async()=>{
+ const c=await current();
+ if(c?.p?.role==='admin'){ $('adminLoginBox')?.classList.add('hidden'); $('adminPanel')?.classList.remove('hidden'); if($('adminPanel')) await loadAdmin(); }
+ if($('adminLoginForm')) $('adminLoginForm').addEventListener('submit', async e=>{
+   e.preventDefault();
+   try{
+     const email=$('adminId').value.trim().toLowerCase();
+     const pass=$('adminPassword').value;
+     const x=await signInWithEmailAndPassword(auth,email,pass); const p=await getProfile(x.user.uid);
+     if(p?.role!=='admin'){await signOut(auth); throw new Error('This account is not an admin.');}
+     $('adminLoginBox').classList.add('hidden'); $('adminPanel').classList.remove('hidden'); await loadAdmin();
+   }catch(e){show('adminMessage','<div class="message error">Admin login failed. Use the admin email/password created in Firebase Authentication.</div>');}
+ });
+ async function loadAdmin(){
+   const fs=await getDocs(query(collection(db,'folders'),orderBy('name'))); const folders=fs.docs.map(d=>({id:d.id,...d.data()}));
+   $('videoFolder').innerHTML=folders.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join(''); $('docFolder').innerHTML=$('videoFolder').innerHTML;
+   $('foldersList').innerHTML=folders.length?folders.map(f=>`<div class="item"><span>${esc(f.name)}</span><button class="button secondary" data-folder-del="${f.id}">Delete</button></div>`).join(''):'<p class="muted">No folders.</p>';
+   document.querySelectorAll('[data-folder-del]').forEach(b=>b.onclick=async()=>{const id=b.dataset.folderDel; const cs=await getDocs(query(collection(db,'content'),where('folderId','==',id))); if(!cs.empty){alert('Delete the content in this folder first.');return;} if(confirm('Delete this folder?')){await deleteDoc(doc(db,'folders',id));await loadAdmin();}});
+   const cs=await getDocs(query(collection(db,'content'),orderBy('createdAt','desc'))); $('adminContent').innerHTML=cs.docs.length?cs.docs.map(d=>{const x=d.data();return `<div class="item"><b>${esc(x.title)}</b> <span class="badge">${esc(x.type)}</span><br><span class="muted">${esc(x.url)}</span><br><button class="button secondary" data-content-del="${d.id}">Delete</button></div>`}).join(''):'<p class="muted">No content.</p>';
+   document.querySelectorAll('[data-content-del]').forEach(b=>b.onclick=async()=>{if(confirm('Delete this content?')){await deleteDoc(doc(db,'content',b.dataset.contentDel));await loadAdmin();}});
+   const us=await getDocs(query(collection(db,'users'),orderBy('createdAt','desc'))); const users=us.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.role!=='admin');
+   $('usersList').innerHTML=users.length?users.map(x=>`<div class="item"><b>${esc(x.name||'')}</b> — ${esc(x.email)} <span class="badge">${esc(x.status||'pending')}</span> <button class="button secondary" data-user="${x.id}" data-status="${x.status}">${x.status==='approved'?'Reject':'Approve'}</button></div>`).join(''):'<p class="muted">No learners yet.</p>';
+   document.querySelectorAll('[data-user]').forEach(b=>b.onclick=async()=>{await updateDoc(doc(db,'users',b.dataset.user),{status:b.dataset.status==='approved'?'rejected':'approved'});await loadAdmin();});
+ }
+ if($('folderForm')) $('folderForm').addEventListener('submit',async e=>{e.preventDefault();await addDoc(collection(db,'folders'),{name:$('folderName').value.trim(),createdAt:serverTimestamp()});e.target.reset();await loadAdmin();});
+ if($('videoForm')) $('videoForm').addEventListener('submit',async e=>{e.preventDefault();await addDoc(collection(db,'content'),{type:'video',title:$('videoTitle').value.trim(),folderId:$('videoFolder').value,url:$('videoUrl').value.trim(),description:'',createdAt:serverTimestamp()});e.target.reset();await loadAdmin();});
+ if($('docForm')) $('docForm').addEventListener('submit',async e=>{e.preventDefault();await addDoc(collection(db,'content'),{type:'document',title:$('docTitle').value.trim(),folderId:$('docFolder').value,url:$('docUrl').value.trim(),description:'',createdAt:serverTimestamp()});e.target.reset();await loadAdmin();});
+})();
